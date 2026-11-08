@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create (e.g. v2.9.0.6-test)
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,   host: x86_64-pc-linux-gnu, cross: "" }
+          - { name: linux-arm64,    host: aarch64-linux-gnu,   cross: "g++-aarch64-linux-gnu binutils-aarch64-linux-gnu" }
+          - { name: windows-x86_64, host: x86_64-w64-mingw32,  cross: "g++-mingw-w64-x86-64-posix" }
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      HOST: ${{ matrix.host }}
+      PLATFORM: ${{ matrix.name }}
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential libtool autotools-dev automake pkg-config bsdmainutils curl ca-certificates git python3 zip \
+            libfontconfig1-dev libfreetype6-dev libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-keysyms1-dev libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev libxcb-sync-dev \
+            libxcb-xfixes0-dev libxcb-shape0-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-util-dev \
+            libxcb-xinerama0-dev libxcb-xkb-dev xkb-data ${{ matrix.cross }}
+
+      - uses: actions/checkout@v4
+
+      - name: Select POSIX threading for MinGW
+        if: matrix.host == 'x86_64-w64-mingw32'
+        run: |
+          update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+          update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+
+      - name: Cache depends
+        uses: actions/cache@v4
+        with:
+          path: |
+            depends/built
+            depends/sources
+          key: depends-${{ matrix.name }}-${{ hashFiles('depends/packages/*', 'depends/Makefile', 'depends/funcs.mk', 'depends/hosts/*') }}
+
+      - name: Build dependencies
+        run: |
+          set -euo pipefail
+          JOBS=$(getconf _NPROCESSORS_ONLN)
+          if [ -n "$HOST" ]; then make -C depends HOST="$HOST" -j"$JOBS"; else make -C depends -j"$JOBS"; fi
+
+      - name: Build wallet
+        run: |
+          set -euo pipefail
+          JOBS=$(getconf _NPROCESSORS_ONLN)
+          SITE=$(ls -d "$PWD"/depends/*/share/config.site | head -n1)
+          ./autogen.sh
+          CONFIG_SITE="$SITE" ./configure --prefix=/ --disable-tests --disable-bench
+          make -j"$JOBS"
+          make install-strip DESTDIR="$PWD/stage"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          NAME="PEPEPOW-${TAG}-${GITHUB_SHA::7}-${PLATFORM}"
+          mkdir -p "pkg/$NAME" out
+          cp -a stage/bin/. "pkg/$NAME/"
+          cd pkg
+          if [ "$PLATFORM" = "windows-x86_64" ]; then
+            zip -r "../out/$NAME.zip" "$NAME"
+          else
+            tar -czf "../out/$NAME.tar.gz" "$NAME"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pepepow-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pepepow-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum PEPEPOW-* > SHA256SUMS.txt
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - name: Compose notes
+        run: |
+          set -euo pipefail
+          SHORT=${GITHUB_SHA::7}
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)
+          RANGE="${PREV:+$PREV..}${GITHUB_SHA}"
+          {
+            echo "# PEPEPOW ${TAG}"
+            echo
+            echo "Test builds of the Qt wallet, daemon and CLI from this fork. Extract and run."
+            echo
+            echo "## Downloads"
+            echo
+            echo "| Platform | File | Size |"
+            echo "| --- | --- | --- |"
+            for f in dist/PEPEPOW-*; do
+              case "$f" in
+                *windows-x86_64*) P="Windows 64-bit, portable" ;;
+                *linux-arm64*)    P="Linux ARM64" ;;
+                *linux-x86_64*)   P="Linux 64-bit" ;;
+                *)                P="Other" ;;
+              esac
+              echo "| ${P} | \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
+            done
+            echo
+            echo "## Authenticity"
+            echo
+            echo "Every file below was built from this repository's public source at commit \`${SHORT}\` by GitHub Actions on GitHub-hosted machines. Nothing was built or uploaded by hand."
+            echo
+            echo "- Windows: not code-signed; SmartScreen may ask for confirmation"
+            echo "- Linux: built on Ubuntu 20.04; needs glibc 2.31 or newer"
+            echo "- Every file is listed in SHA256SUMS.txt and carries a GitHub build-provenance attestation tying it to this commit and workflow run."
+            echo
+            echo "Verify a download with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`, or compare its hash:"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS.txt
+            echo '```'
+            echo
+            echo "## Changes since ${PREV:-the first commit}"
+            echo
+            echo "$(git rev-list --count ${RANGE}) commits, $(git diff --shortstat ${PREV:-$(git rev-list --max-parents=0 HEAD | tail -n1)} ${GITHUB_SHA})."
+            [ -n "$PREV" ] && echo "Full comparison: ${REPO_URL}/compare/${PREV}...${SHORT}"
+            echo
+            git log --pretty=format:'- %s (%h) — %an' ${RANGE} | head -n 400
+          } > notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRE=""
+          case "$TAG" in *-*) PRE="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --title "PEPEPOW ${TAG}" --notes-file notes.md --target "$GITHUB_SHA" $PRE

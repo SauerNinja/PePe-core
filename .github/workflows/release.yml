@@ -68,7 +68,23 @@ jobs:
         run: |
           set -euo pipefail
           JOBS=$(getconf _NPROCESSORS_ONLN)
-          if [ -n "$HOST" ]; then make -C depends HOST="$HOST" -j"$JOBS"; else make -C depends -j"$JOBS"; fi
+          if [ "$HOST" = "aarch64-linux-gnu" ]; then
+            python3 - <<'PY'
+          p = 'depends/funcs.mk'
+          s = open(p).read()
+          old = '\t$(AT)cd $$(@D); $(call $(1)_preprocess_cmds, $(1))'
+          new = '\t$(AT)cd $$(@D); find . -name config.sub -exec cp $(BASEDIR)/config.sub {} \\; ; find . -name config.guess -exec cp $(BASEDIR)/config.guess {} \\; ; $(call $(1)_preprocess_cmds, $(1))'
+          assert old in s
+          open(p, 'w').write(s.replace(old, new))
+          q = 'depends/packages/qt.mk'
+          s = open(q).read()
+          old = '$(package)_config_opts_arm_linux  = -platform linux-g++ -xplatform $(host)\n'
+          new = old + '$(package)_config_opts_aarch64_linux = -platform linux-g++ -xplatform linux-aarch64-gnu-g++ -device-option CROSS_COMPILE="$(host)-"\n'
+          assert old in s
+          open(q, 'w').write(s.replace(old, new))
+          PY
+          fi
+          make -C depends HOST="$HOST" -j"$JOBS"
 
       - name: Build wallet
         run: |

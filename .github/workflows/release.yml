@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to create (e.g. v2.9.0.6-test2)
+        description: Release tag to create (e.g. v2.9.0.6-test)
         required: true
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
         include:
           - { name: linux-x86_64,   host: x86_64-pc-linux-gnu, cross: "" }
           - { name: linux-arm64,    host: aarch64-linux-gnu,   cross: "g++-aarch64-linux-gnu binutils-aarch64-linux-gnu" }
-          - { name: windows-x86_64, host: x86_64-w64-mingw32,  cross: "g++-mingw-w64-x86-64-posix" }
+          - { name: windows-x86_64, host: x86_64-w64-mingw32,  cross: "g++-mingw-w64-x86-64" }
     env:
       DEBIAN_FRONTEND: noninteractive
       HOST: ${{ matrix.host }}
@@ -38,7 +38,7 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y build-essential libtool autotools-dev automake pkg-config bsdmainutils curl ca-certificates git python3 zip \
+          apt-get install -y build-essential libtool autotools-dev automake pkg-config bsdmainutils curl ca-certificates git python3 zip xz-utils bzip2 \
             libfontconfig1-dev libfreetype6-dev libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev \
             libxcb1-dev libxcb-keysyms1-dev libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev libxcb-sync-dev \
             libxcb-xfixes0-dev libxcb-shape0-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-util-dev \

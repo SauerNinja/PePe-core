@@ -26,10 +26,9 @@ With enough support - PEPEPOW is set to become the second most popular proof-of-
  - Dice Game [DICE](https://dice-pepepow.foztor.net/)
  - Mining Pool [COMMUNITY POOL](https://community-pool.pepepow.org/)
  - Block Explorer [PEPEPOW-EXPLORER](https://explorer.pepepow.org/)
- - M4P Block Explorer [PEPEPOW-EXPLORER](https://explorer2.pepepow.org/)
  - Reborn Discord [DISCORD] https://discord.gg/pxKvp4GJh5
  - Twitter [TWITTER](https://twitter.com/PEPEWCommunity)
- - Reddit [REDDIT](https://www.reddit.com/r/PEPEWCommunity/)
+ - Reddit [REDDIT](https://www.reddit.com/r/PepePowCommunity/)
   
 ## <h2><strong>Coins Specifications:</strong></h2>
 <table>
@@ -52,11 +51,11 @@ With enough support - PEPEPOW is set to become the second most popular proof-of-
 </tr>
 <tr>
 <td>Network Port</td>
-<td>8832</td>
+<td>8833</td>
 </tr>
 <tr>
 <td>RPC Port</td>
-<td>8833</td>
+<td>8832 (by default)</td>
 </tr>
 <tr>
 <td>Subsidy halving interval</td>
@@ -106,7 +105,3 @@ Future and Historical Reward Structure:
 The original dev fee was removed from this chain and it is now entirely community-maintained / run. To thank or support those who contribute to this project please consider making a contribution. Any amount helps! 
 
 Foztor : PMG1tmwb7fRrPnKmRCuAzKBd2t7KPDw6Nf
-
-Setvin : PNT3qZ2sshPvyS5egaCpfEQZmfHoZEA1Bu
-
-Mining4People : PNb6mBbGdudbM7UXGouazzUQZZTf9kzReW 

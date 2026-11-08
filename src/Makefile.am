@@ -395,11 +395,12 @@ crypto_libbitcoin_crypto_a_SOURCES = \
 HOOHASH_DETERMINISTIC_CFLAGS = \
   -fno-fast-math \
   -ffp-contract=off \
-  -fexcess-precision=standard
+  -fexcess-precision=standard \
+  $(HOOHASH_X86_CFLAGS)
 
 # Apply to the crypto static library (this is where hoohash.c is built)
 crypto_libbitcoin_crypto_a_CFLAGS = $(AM_CFLAGS) $(PIE_FLAGS) $(HOOHASH_DETERMINISTIC_CFLAGS)
-crypto_libbitcoin_crypto_a_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_a_CPPFLAGS = $(AM_CPPFLAGS) $(OPENLIBM_CPPFLAGS)
 
 if USE_ASM
 crypto_libbitcoin_crypto_a_SOURCES += crypto/sha256_sse4.cpp
@@ -541,7 +542,7 @@ if ENABLE_WALLET
 PEPEPOWd_LDADD += libbitcoin_wallet.a
 endif
 
-PEPEPOWd_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS)
+PEPEPOWd_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(OPENLIBM_LIBS)
 
 # PEPEPOW-cli binary #
 PEPEPOW_cli_SOURCES = dash-cli.cpp
@@ -581,7 +582,7 @@ PEPEPOW_tx_LDADD = \
   $(LIBBITCOIN_CRYPTO_ARM_SHANI) \
   $(LIBSECP256K1)
 
-PEPEPOW_tx_LDADD += $(BOOST_LIBS) $(CRYPTO_LIBS)
+PEPEPOW_tx_LDADD += $(BOOST_LIBS) $(CRYPTO_LIBS) $(OPENLIBM_LIBS)
 #
 
 # dashconsensus library #

@@ -10,6 +10,7 @@ on:
       tag:
         description: Release tag to create (e.g. v2.9.0.6-test)
         required: true
+        type: string
 
 permissions:
   contents: write
@@ -20,6 +21,11 @@ env:
   TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || format('test-{0}', github.run_number) }}
 
 jobs:
+
+  # --------------------------------------------------
+  # Linux and Windows builds
+  # --------------------------------------------------
+
   build:
     name: Build ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -28,6 +34,7 @@ jobs:
       run:
         shell: bash
     timeout-minutes: 360
+
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +42,7 @@ jobs:
           - { name: linux-x86_64, host: x86_64-pc-linux-gnu, cross: "" }
           - { name: linux-arm64, host: aarch64-linux-gnu, cross: "g++-aarch64-linux-gnu binutils-aarch64-linux-gnu" }
           - { name: windows-x86_64, host: x86_64-w64-mingw32, cross: "g++-mingw-w64-x86-64" }
+
     env:
       DEBIAN_FRONTEND: noninteractive
       HOST: ${{ matrix.host }}
@@ -44,7 +52,7 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y coreutils build-essential libtool autotools-dev automake pkg-config bsdmainutils curl ca-certificates git python3 zip xz-utils bzip2 gperf gettext bison \
+          apt-get install -y coreutils build-essential libtool autotools-dev automake pkg-config bsdmainutils curl ca-certificates git python3 zip unzip xz-utils bzip2 gperf gettext bison \
             libfontconfig1-dev libfreetype6-dev libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev \
             libxcb1-dev libxcb-keysyms1-dev libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev libxcb-sync-dev \
             libxcb-xfixes0-dev libxcb-shape0-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-util-dev \
@@ -75,16 +83,17 @@ jobs:
             python3 - <<'PY'
           from pathlib import Path
 
-          # Update old autotools platform-detection helpers.
           p = Path("depends/funcs.mk")
           s = p.read_text()
+
           old = '\t$(AT)cd $$(@D); $(call $(1)_preprocess_cmds, $(1))'
           new = '\t$(AT)cd $$(@D); find . -name config.sub -exec cp $(BASEDIR)/config.sub {} \\; ; find . -name config.guess -exec cp $(BASEDIR)/config.guess {} \\; ; $(call $(1)_preprocess_cmds, $(1))'
+
           if old not in s:
               raise SystemExit("Could not find expected preprocessing command in depends/funcs.mk")
+
           p.write_text(s.replace(old, new, 1))
 
-          # Tell Qt to use the ARM64 cross-platform specification.
           q = Path("depends/packages/qt.mk")
           s = q.read_text()
 
@@ -96,7 +105,6 @@ jobs:
                   raise SystemExit("Could not find expected ARM Qt configuration option")
               s = s.replace(arm_option, arm_option + arm64_option, 1)
 
-          # Create the missing Qt 5.5 ARM64 mkspec during preprocessing.
           marker = '  mkdir -p qtbase/mkspecs/macx-clang-linux &&\\\n'
 
           if 'qtbase/mkspecs/linux-aarch64-gnu-g++/qmake.conf' not in s:
@@ -124,10 +132,8 @@ jobs:
           q.write_text(s)
           PY
 
-            # Fail early if the compiler or Qt spec is missing.
             command -v aarch64-linux-gnu-gcc
             command -v aarch64-linux-gnu-g++
-            grep -n -A12 'linux-aarch64-gnu-g++' depends/packages/qt.mk
           fi
 
           make -C depends HOST="$HOST" -j"$JOBS"
@@ -138,25 +144,33 @@ jobs:
           JOBS=$(getconf _NPROCESSORS_ONLN)
           SITE=$(find "$PWD/depends" -path '*/share/config.site' -type f -print -quit)
           test -n "$SITE"
+
           ./autogen.sh
           CONFIG_SITE="$SITE" ./configure --prefix=/ --disable-tests --disable-bench --without-libs
           make -j"$JOBS"
           make install-strip DESTDIR="$PWD/stage"
 
-      - name: Package
+      - name: Package and checksum binaries
         run: |
           set -euo pipefail
+
           NAME="PEPEPOW-${TAG}-${GITHUB_SHA::7}-${PLATFORM}"
           mkdir -p "pkg/$NAME" out
+
           test -d stage/bin
           cp -a stage/bin/. "pkg/$NAME/"
-          test -n "$(find "pkg/$NAME" -maxdepth 1 -type f -print -quit)"
 
-          cd pkg
+          cd "pkg/$NAME"
+          find . -type f ! -name 'BINARY-SHA256SUMS.txt' \
+            -exec sha256sum {} \; > BINARY-SHA256SUMS.txt
+          cd ../..
+
+          test -s "pkg/$NAME/BINARY-SHA256SUMS.txt"
+
           if [ "$PLATFORM" = "windows-x86_64" ]; then
-            zip -r "../out/$NAME.zip" "$NAME"
+            zip -r "out/$NAME.zip" "pkg/$NAME"
           else
-            tar -czf "../out/$NAME.tar.gz" "$NAME"
+            tar -czf "out/$NAME.tar.gz" -C pkg "$NAME"
           fi
 
       - uses: actions/upload-artifact@v4
@@ -165,10 +179,112 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  # --------------------------------------------------
+  # Native macOS Intel build
+  # --------------------------------------------------
+
+  build-macos:
+    name: Build macOS Intel
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+
+    env:
+      HOST: x86_64-apple-darwin11
+      PLATFORM: macos-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+
+          brew update
+          brew install autoconf automake libtool pkg-config
+
+          xcode-select -p
+          xcrun --sdk macosx --show-sdk-path
+
+          # Provide the GNU libtoolize name expected by autotools.
+          mkdir -p "$RUNNER_TEMP/gnu-libtool-bin"
+          ln -sf "$(command -v glibtoolize)" "$RUNNER_TEMP/gnu-libtool-bin/libtoolize"
+          echo "$RUNNER_TEMP/gnu-libtool-bin" >> "$GITHUB_PATH"
+
+      - name: Cache macOS dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            depends/built
+            depends/sources
+          key: depends-macos-x86_64-${{ hashFiles('depends/packages/*', 'depends/Makefile', 'depends/funcs.mk', 'depends/hosts/*') }}
+
+      - name: Build macOS dependencies
+        run: |
+          set -euo pipefail
+
+          JOBS=$(sysctl -n hw.ncpu)
+
+          # Use a deployment target supported by current Xcode.
+          make -C depends \
+            HOST="$HOST" \
+            OSX_MIN_VERSION=10.13 \
+            -j"$JOBS"
+
+      - name: Build macOS wallet
+        run: |
+          set -euo pipefail
+
+          SITE=$(find "$PWD/depends" -path '*/share/config.site' -type f -print -quit)
+          test -n "$SITE"
+
+          ./autogen.sh
+
+          CONFIG_SITE="$SITE" ./configure \
+            --prefix=/ \
+            --disable-tests \
+            --disable-bench \
+            --without-libs
+
+          JOBS=$(sysctl -n hw.ncpu)
+          make -j"$JOBS"
+          make install-strip DESTDIR="$PWD/stage"
+
+      - name: Package macOS binaries and checksums
+        run: |
+          set -euo pipefail
+
+          NAME="PEPEPOW-${TAG}-${GITHUB_SHA::7}-${PLATFORM}"
+          mkdir -p "pkg/$NAME" out
+
+          test -d stage/bin
+          cp -a stage/bin/. "pkg/$NAME/"
+
+          cd "pkg/$NAME"
+
+          find . -type f ! -name 'BINARY-SHA256SUMS.txt' \
+            -exec shasum -a 256 {} \; > BINARY-SHA256SUMS.txt
+
+          cd ../..
+
+          test -s "pkg/$NAME/BINARY-SHA256SUMS.txt"
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            "pkg/$NAME" "out/$NAME.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pepepow-macos-x86_64
+          path: out/*
+          if-no-files-found: error
+
+  # --------------------------------------------------
+  # Verify and publish all four platforms
+  # --------------------------------------------------
+
   release:
     name: Publish release
-    needs: build
-    if: ${{ needs.build.result == 'success' }}
+    needs: [build, build-macos]
+    if: ${{ needs.build.result == 'success' && needs.build-macos.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -182,36 +298,79 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Verify all platform packages
+      - name: Verify all four platform packages
         run: |
           set -euo pipefail
+
           test -n "$(find dist -maxdepth 1 -name '*linux-x86_64.tar.gz' -print -quit)"
           test -n "$(find dist -maxdepth 1 -name '*linux-arm64.tar.gz' -print -quit)"
           test -n "$(find dist -maxdepth 1 -name '*windows-x86_64.zip' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -name '*macos-x86_64.zip' -print -quit)"
 
           COUNT=$(find dist -maxdepth 1 -type f \( \
             -name '*linux-x86_64.tar.gz' -o \
             -name '*linux-arm64.tar.gz' -o \
-            -name '*windows-x86_64.zip' \
+            -name '*windows-x86_64.zip' -o \
+            -name '*macos-x86_64.zip' \
           \) | wc -l)
 
-          test "$COUNT" -eq 3
+          test "$COUNT" -eq 4
 
-      - name: Checksums
+      - name: Generate archive checksums
         run: |
           set -euo pipefail
-          cd dist
-          sha256sum PEPEPOW-* > SHA256SUMS.txt
 
-      - uses: actions/attest-build-provenance@v2
+          cd dist
+          sha256sum PEPEPOW-* > SHA256SUMS-ARCHIVES.txt
+          cd ..
+
+      - name: Extract packages for binary checksums
+        run: |
+          set -euo pipefail
+
+          mkdir -p expanded
+
+          for f in dist/PEPEPOW-*; do
+            case "$f" in
+              *.tar.gz)
+                tar -xzf "$f" -C expanded
+                ;;
+              *.zip)
+                unzip -q "$f" -d expanded
+                ;;
+              *)
+                echo "Unexpected package: $f"
+                exit 1
+                ;;
+            esac
+          done
+
+          test -n "$(find expanded -type f -name 'BINARY-SHA256SUMS.txt' -print -quit)"
+
+      - name: Generate release-wide binary checksums
+        run: |
+          set -euo pipefail
+
+          cd expanded
+
+          find . -type f ! -name 'BINARY-SHA256SUMS.txt' \
+            -print0 | sort -z | xargs -0 sha256sum \
+            > ../dist/SHA256SUMS-BINARIES.txt
+
+          test -s ../dist/SHA256SUMS-BINARIES.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/PEPEPOW-*
 
-      - name: Compose notes
+      - name: Compose release notes
         run: |
           set -euo pipefail
+
           SHORT=${GITHUB_SHA::7}
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
           PREV=$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)
           RANGE="${PREV:+$PREV..}${GITHUB_SHA}"
           ROOT=$(git rev-list --max-parents=0 HEAD | tail -n1)
@@ -220,7 +379,7 @@ jobs:
           {
             echo "# PEPEPOW ${TAG}"
             echo
-            echo "Test builds of the Qt wallet, daemon and CLI from this fork. Extract and run."
+            echo "Wallet, daemon and CLI builds from this repository."
             echo
             echo "## Downloads"
             echo
@@ -229,29 +388,33 @@ jobs:
 
             for f in dist/PEPEPOW-*; do
               case "$f" in
-                *windows-x86_64*) P="Windows 64-bit, portable" ;;
+                *windows-x86_64*) P="Windows 64-bit" ;;
                 *linux-arm64*) P="Linux ARM64" ;;
-                *linux-x86_64*) P="Linux 64-bit" ;;
+                *linux-x86_64*) P="Linux x86_64" ;;
+                *macos-x86_64*) P="macOS Intel 64-bit (Apple Silicon via Rosetta)" ;;
                 *) P="Other" ;;
               esac
+
               echo "| ${P} | \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
             done
 
             echo
+            echo "## Checksums"
+            echo
+            echo "- SHA256SUMS-ARCHIVES.txt verifies the downloadable ZIP and TAR.GZ files."
+            echo "- SHA256SUMS-BINARIES.txt verifies every packaged binary."
+            echo "- Every platform package also contains BINARY-SHA256SUMS.txt."
+            echo
             echo "## Authenticity"
             echo
-            echo "Every package was built from this repository at commit \`${SHORT}\` by GitHub Actions."
+            echo "Packages were built by GitHub Actions from commit \`${SHORT}\`."
             echo
-            echo "- Windows: not code-signed; SmartScreen may ask for confirmation"
-            echo "- Linux: built on Ubuntu 20.04; needs glibc 2.31 or newer"
-            echo "- Package hashes are listed in SHA256SUMS.txt."
+            echo "- Windows: not code-signed; SmartScreen may ask for confirmation."
+            echo "- Linux: built on Ubuntu 20.04; needs glibc 2.31 or newer."
+            echo "- macOS: Intel x86_64 build, with a 10.13 deployment target."
             echo "- Package files carry GitHub build-provenance attestations."
             echo
-            echo "Verify a download with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`, or compare its hash:"
-            echo
-            echo '```'
-            cat dist/SHA256SUMS.txt
-            echo '```'
+            echo "Verify a package with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."
             echo
             echo "## Changes since ${BASE}"
             echo
@@ -263,6 +426,7 @@ jobs:
 
             echo
             git log --pretty=format:'- %s (%h) — %an' "${RANGE}" | head -n 400
+
           } > notes.md
 
       - name: Create release
@@ -270,6 +434,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
           PRE=""
-          case "$TAG" in *-*) PRE="--prerelease" ;; esac
-          gh release create "$TAG" dist/* --title "PEPEPOW ${TAG}" --notes-file notes.md --target "$GITHUB_SHA" $PRE
+          case "$TAG" in
+            *-*) PRE="--prerelease" ;;
+          esac
+
+          gh release create "$TAG" dist/* \
+            --title "PEPEPOW ${TAG}" \
+            --notes-file notes.md \
+            --target "$GITHUB_SHA" \
+            $PRE

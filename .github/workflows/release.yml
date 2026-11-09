@@ -70,29 +70,74 @@ jobs:
         run: |
           set -euo pipefail
           JOBS=$(getconf _NPROCESSORS_ONLN)
+
           if [ "$HOST" = "aarch64-linux-gnu" ]; then
             python3 - <<'PY'
-          p = 'depends/funcs.mk'
-          s = open(p).read()
+          from pathlib import Path
+
+          # Update old autotools platform-detection helpers.
+          p = Path("depends/funcs.mk")
+          s = p.read_text()
           old = '\t$(AT)cd $$(@D); $(call $(1)_preprocess_cmds, $(1))'
           new = '\t$(AT)cd $$(@D); find . -name config.sub -exec cp $(BASEDIR)/config.sub {} \\; ; find . -name config.guess -exec cp $(BASEDIR)/config.guess {} \\; ; $(call $(1)_preprocess_cmds, $(1))'
-          assert old in s
-          open(p, 'w').write(s.replace(old, new))
-          q = 'depends/packages/qt.mk'
-          s = open(q).read()
-          old = '$(package)_config_opts_arm_linux  = -platform linux-g++ -xplatform $(host)\n'
-          new = old + '$(package)_config_opts_aarch64_linux = -platform linux-g++ -xplatform linux-aarch64-gnu-g++ -device-option CROSS_COMPILE="$(host)-"\n'
-          assert old in s
-          open(q, 'w').write(s.replace(old, new))
+          if old not in s:
+              raise SystemExit("Could not find expected preprocessing command in depends/funcs.mk")
+          p.write_text(s.replace(old, new, 1))
+
+          # Tell Qt to use the ARM64 cross-platform specification.
+          q = Path("depends/packages/qt.mk")
+          s = q.read_text()
+
+          arm_option = '$(package)_config_opts_arm_linux  = -platform linux-g++ -xplatform $(host)\n'
+          arm64_option = '$(package)_config_opts_aarch64_linux = -platform linux-g++ -xplatform linux-aarch64-gnu-g++\n'
+
+          if arm64_option not in s:
+              if arm_option not in s:
+                  raise SystemExit("Could not find expected ARM Qt configuration option")
+              s = s.replace(arm_option, arm_option + arm64_option, 1)
+
+          # Create the missing Qt 5.5 ARM64 mkspec during preprocessing.
+          marker = '  mkdir -p qtbase/mkspecs/macx-clang-linux &&\\\n'
+
+          if 'qtbase/mkspecs/linux-aarch64-gnu-g++/qmake.conf' not in s:
+              if marker not in s:
+                  raise SystemExit("Could not find Qt preprocessing insertion point")
+
+              addition = (
+                  '  mkdir -p qtbase/mkspecs/linux-aarch64-gnu-g++ &&\\\n'
+                  '  cp -a qtbase/mkspecs/linux-g++/. qtbase/mkspecs/linux-aarch64-gnu-g++/ &&\\\n'
+                  "  printf '%s\\n' "
+                  "'QMAKE_CC = aarch64-linux-gnu-gcc' "
+                  "'QMAKE_CXX = aarch64-linux-gnu-g++' "
+                  "'QMAKE_LINK = aarch64-linux-gnu-g++' "
+                  "'QMAKE_LINK_SHLIB = aarch64-linux-gnu-g++' "
+                  "'QMAKE_AR = aarch64-linux-gnu-ar cqs' "
+                  "'QMAKE_NM = aarch64-linux-gnu-nm -P' "
+                  "'QMAKE_OBJCOPY = aarch64-linux-gnu-objcopy' "
+                  "'QMAKE_STRIP = aarch64-linux-gnu-strip' "
+                  "'QMAKE_RANLIB = aarch64-linux-gnu-ranlib' "
+                  '>> qtbase/mkspecs/linux-aarch64-gnu-g++/qmake.conf &&\\\n'
+              )
+
+              s = s.replace(marker, addition + marker, 1)
+
+          q.write_text(s)
           PY
+
+            # Fail early if the compiler or Qt spec is missing.
+            command -v aarch64-linux-gnu-gcc
+            command -v aarch64-linux-gnu-g++
+            grep -n -A12 'linux-aarch64-gnu-g++' depends/packages/qt.mk
           fi
+
           make -C depends HOST="$HOST" -j"$JOBS"
 
       - name: Build wallet
         run: |
           set -euo pipefail
           JOBS=$(getconf _NPROCESSORS_ONLN)
-          SITE=$(ls -d "$PWD"/depends/*/share/config.site | head -n1)
+          SITE=$(find "$PWD/depends" -path '*/share/config.site' -type f -print -quit)
+          test -n "$SITE"
           ./autogen.sh
           CONFIG_SITE="$SITE" ./configure --prefix=/ --disable-tests --disable-bench --without-libs
           make -j"$JOBS"
@@ -103,7 +148,10 @@ jobs:
           set -euo pipefail
           NAME="PEPEPOW-${TAG}-${GITHUB_SHA::7}-${PLATFORM}"
           mkdir -p "pkg/$NAME" out
+          test -d stage/bin
           cp -a stage/bin/. "pkg/$NAME/"
+          test -n "$(find "pkg/$NAME" -maxdepth 1 -type f -print -quit)"
+
           cd pkg
           if [ "$PLATFORM" = "windows-x86_64" ]; then
             zip -r "../out/$NAME.zip" "$NAME"
@@ -134,12 +182,20 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Verify platform packages
+      - name: Verify all platform packages
         run: |
           set -euo pipefail
           test -n "$(find dist -maxdepth 1 -name '*linux-x86_64.tar.gz' -print -quit)"
           test -n "$(find dist -maxdepth 1 -name '*linux-arm64.tar.gz' -print -quit)"
           test -n "$(find dist -maxdepth 1 -name '*windows-x86_64.zip' -print -quit)"
+
+          COUNT=$(find dist -maxdepth 1 -type f \( \
+            -name '*linux-x86_64.tar.gz' -o \
+            -name '*linux-arm64.tar.gz' -o \
+            -name '*windows-x86_64.zip' \
+          \) | wc -l)
+
+          test "$COUNT" -eq 3
 
       - name: Checksums
         run: |
@@ -158,6 +214,9 @@ jobs:
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           PREV=$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)
           RANGE="${PREV:+$PREV..}${GITHUB_SHA}"
+          ROOT=$(git rev-list --max-parents=0 HEAD | tail -n1)
+          BASE="${PREV:-$ROOT}"
+
           {
             echo "# PEPEPOW ${TAG}"
             echo
@@ -167,23 +226,26 @@ jobs:
             echo
             echo "| Platform | File | Size |"
             echo "| --- | --- | --- |"
+
             for f in dist/PEPEPOW-*; do
               case "$f" in
                 *windows-x86_64*) P="Windows 64-bit, portable" ;;
-                *linux-arm64*)    P="Linux ARM64" ;;
-                *linux-x86_64*)   P="Linux 64-bit" ;;
-                *)                P="Other" ;;
+                *linux-arm64*) P="Linux ARM64" ;;
+                *linux-x86_64*) P="Linux 64-bit" ;;
+                *) P="Other" ;;
               esac
               echo "| ${P} | \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
             done
+
             echo
             echo "## Authenticity"
             echo
-            echo "Every file below was built from this repository's public source at commit \`${SHORT}\` by GitHub Actions on GitHub-hosted machines. Nothing was built or uploaded by hand."
+            echo "Every package was built from this repository at commit \`${SHORT}\` by GitHub Actions."
             echo
             echo "- Windows: not code-signed; SmartScreen may ask for confirmation"
             echo "- Linux: built on Ubuntu 20.04; needs glibc 2.31 or newer"
-            echo "- Every file is listed in SHA256SUMS.txt and carries a GitHub build-provenance attestation tying it to this commit and workflow run."
+            echo "- Package hashes are listed in SHA256SUMS.txt."
+            echo "- Package files carry GitHub build-provenance attestations."
             echo
             echo "Verify a download with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`, or compare its hash:"
             echo
@@ -191,12 +253,16 @@ jobs:
             cat dist/SHA256SUMS.txt
             echo '```'
             echo
-            echo "## Changes since ${PREV:-the first commit}"
+            echo "## Changes since ${BASE}"
             echo
-            echo "$(git rev-list --count ${RANGE}) commits, $(git diff --shortstat ${PREV:-$(git rev-list --max-parents=0 HEAD | tail -n1)} ${GITHUB_SHA})."
-            [ -n "$PREV" ] && echo "Full comparison: ${REPO_URL}/compare/${PREV}...${SHORT}"
+            echo "$(git rev-list --count "${BASE}..${GITHUB_SHA}") commits, $(git diff --shortstat "${BASE}" "${GITHUB_SHA}")."
+
+            if [ -n "$PREV" ]; then
+              echo "Full comparison: ${REPO_URL}/compare/${PREV}...${SHORT}"
+            fi
+
             echo
-            git log --pretty=format:'- %s (%h) — %an' ${RANGE} | head -n 400
+            git log --pretty=format:'- %s (%h) — %an' "${RANGE}" | head -n 400
           } > notes.md
 
       - name: Create release

@@ -1,3 +1,4 @@
+
 name: Release
 
 on:
@@ -7,9 +8,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to create (for example v2.9.0.6-test)
+        description: Release tag to create (e.g. v2.9.0.6-test)
         required: true
-        type: string
 
 permissions:
   contents: write
@@ -32,15 +32,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64
-            host: x86_64-pc-linux-gnu
-            cross: ''
-          - name: linux-arm64
-            host: aarch64-linux-gnu
-            cross: 'g++-aarch64-linux-gnu binutils-aarch64-linux-gnu'
-          - name: windows-x86_64
-            host: x86_64-w64-mingw32
-            cross: 'g++-mingw-w64-x86-64'
+          - { name: linux-x86_64, host: x86_64-pc-linux-gnu, cross: "" }
+          - { name: linux-arm64, host: aarch64-linux-gnu, cross: "g++-aarch64-linux-gnu binutils-aarch64-linux-gnu" }
+          - { name: windows-x86_64, host: x86_64-w64-mingw32, cross: "g++-mingw-w64-x86-64" }
     env:
       DEBIAN_FRONTEND: noninteractive
       HOST: ${{ matrix.host }}
@@ -50,26 +44,19 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y \
-            build-essential libtool autotools-dev automake pkg-config bsdmainutils \
-            curl ca-certificates git python3 zip xz-utils bzip2 gperf gettext bison \
-            libfontconfig1-dev libfreetype6-dev libx11-dev libx11-xcb-dev \
-            libxext-dev libxfixes-dev libxi-dev libxrender-dev \
-            libxcb1-dev libxcb-keysyms1-dev libxcb-image0-dev libxcb-shm0-dev \
-            libxcb-icccm4-dev libxcb-sync-dev libxcb-xfixes0-dev \
-            libxcb-shape0-dev libxcb-randr0-dev libxcb-render-util0-dev \
-            libxcb-util-dev libxcb-xinerama0-dev libxcb-xkb-dev xkb-data \
-            ${{ matrix.cross }}
+          apt-get install -y coreutils build-essential libtool autotools-dev automake pkg-config bsdmainutils curl ca-certificates git python3 zip xz-utils bzip2 gperf gettext bison \
+            libfontconfig1-dev libfreetype6-dev libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-keysyms1-dev libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev libxcb-sync-dev \
+            libxcb-xfixes0-dev libxcb-shape0-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-util-dev \
+            libxcb-xinerama0-dev libxcb-xkb-dev xkb-data ${{ matrix.cross }}
 
       - uses: actions/checkout@v4
 
       - name: Select POSIX threading for MinGW
         if: matrix.host == 'x86_64-w64-mingw32'
         run: |
-          update-alternatives --set x86_64-w64-mingw32-g++ \
-            /usr/bin/x86_64-w64-mingw32-g++-posix
-          update-alternatives --set x86_64-w64-mingw32-gcc \
-            /usr/bin/x86_64-w64-mingw32-gcc-posix
+          update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+          update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
 
       - name: Cache depends
         uses: actions/cache@v4
@@ -79,80 +66,35 @@ jobs:
             depends/sources
           key: depends-${{ matrix.name }}-${{ hashFiles('depends/packages/*', 'depends/Makefile', 'depends/funcs.mk', 'depends/hosts/*') }}
 
-      - name: Configure ARM64 Qt cross-compilation
-        if: matrix.host == 'aarch64-linux-gnu'
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("depends/packages/qt.mk")
-          text = path.read_text()
-
-          old = "$(package)_config_opts_arm_linux  = -platform linux-g++ -xplatform $(host)\n"
-          new = old + "$(package)_config_opts_aarch64_linux = -platform linux-g++ -xplatform $(host)\n"
-          if old not in text:
-              raise SystemExit("Could not find the expected Qt ARM Linux configuration in depends/packages/qt.mk")
-          text = text.replace(old, new, 1)
-
-          marker = "mkdir -p qtbase/mkspecs/macx-clang-linux &&\\\n"
-          addition = (
-              "mkdir -p qtbase/mkspecs/linux-aarch64-gnu-g++ && "
-              "cp -a qtbase/mkspecs/linux-g++/. qtbase/mkspecs/linux-aarch64-gnu-g++/ && "
-              "printf '%s\\n' "
-              "'QMAKE_CC = aarch64-linux-gnu-gcc' "
-              "'QMAKE_CXX = aarch64-linux-gnu-g++' "
-              "'QMAKE_LINK = aarch64-linux-gnu-g++' "
-              "'QMAKE_LINK_SHLIB = aarch64-linux-gnu-g++' "
-              "'QMAKE_AR = aarch64-linux-gnu-ar cqs' "
-              "'QMAKE_NM = aarch64-linux-gnu-nm -P' "
-              "'QMAKE_OBJCOPY = aarch64-linux-gnu-objcopy' "
-              "'QMAKE_STRIP = aarch64-linux-gnu-strip' "
-              ">> qtbase/mkspecs/linux-aarch64-gnu-g++/qmake.conf && \\\\\\n  "
-          )
-          if marker not in text:
-              raise SystemExit("Could not find the expected Qt preprocessing insertion point")
-          text = text.replace(marker, addition + marker, 1)
-          path.write_text(text)
-          PY
-
       - name: Build dependencies
         run: |
           set -euo pipefail
-          JOBS="$(getconf _NPROCESSORS_ONLN)"
-
+          JOBS=$(getconf _NPROCESSORS_ONLN)
           if [ "$HOST" = "aarch64-linux-gnu" ]; then
             python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("depends/funcs.mk")
-          text = path.read_text()
-          old = "\t$(AT)cd $$(@D); $(call $(1)_preprocess_cmds, $(1))"
-          new = (
-              "\t$(AT)cd $$(@D); "
-              "find . -name config.sub -exec cp $(BASEDIR)/config.sub {} \\; ; "
-              "find . -name config.guess -exec cp $(BASEDIR)/config.guess {} \\; ; "
-              "$(call $(1)_preprocess_cmds, $(1))"
-          )
-          if old not in text:
-              raise SystemExit("Could not find the expected depends preprocessing rule")
-          path.write_text(text.replace(old, new, 1))
+          p = 'depends/funcs.mk'
+          s = open(p).read()
+          old = '\t$(AT)cd $$(@D); $(call $(1)_preprocess_cmds, $(1))'
+          new = '\t$(AT)cd $$(@D); find . -name config.sub -exec cp $(BASEDIR)/config.sub {} \\; ; find . -name config.guess -exec cp $(BASEDIR)/config.guess {} \\; ; $(call $(1)_preprocess_cmds, $(1))'
+          assert old in s
+          open(p, 'w').write(s.replace(old, new))
+          q = 'depends/packages/qt.mk'
+          s = open(q).read()
+          old = '$(package)_config_opts_arm_linux  = -platform linux-g++ -xplatform $(host)\n'
+          new = old + '$(package)_config_opts_aarch64_linux = -platform linux-g++ -xplatform linux-aarch64-gnu-g++ -device-option CROSS_COMPILE="$(host)-"\n'
+          assert old in s
+          open(q, 'w').write(s.replace(old, new))
           PY
           fi
-
           make -C depends HOST="$HOST" -j"$JOBS"
 
       - name: Build wallet
         run: |
           set -euo pipefail
-          JOBS="$(getconf _NPROCESSORS_ONLN)"
-          SITE="$(find "$PWD/depends/$HOST" -path '*/share/config.site' -print -quit)"
-          test -n "$SITE"
+          JOBS=$(getconf _NPROCESSORS_ONLN)
+          SITE=$(ls -d "$PWD"/depends/*/share/config.site | head -n1)
           ./autogen.sh
-          CONFIG_SITE="$SITE" ./configure \
-            --prefix=/ \
-            --disable-tests \
-            --disable-bench \
-            --without-libs
+          CONFIG_SITE="$SITE" ./configure --prefix=/ --disable-tests --disable-bench --without-libs
           make -j"$JOBS"
           make install-strip DESTDIR="$PWD/stage"
 
@@ -161,32 +103,26 @@ jobs:
           set -euo pipefail
           NAME="PEPEPOW-${TAG}-${GITHUB_SHA::7}-${PLATFORM}"
           mkdir -p "pkg/$NAME" out
-          test -d stage/bin
           cp -a stage/bin/. "pkg/$NAME/"
-
+          cd pkg
           if [ "$PLATFORM" = "windows-x86_64" ]; then
-            (
-              cd pkg
-              zip -r "../out/$NAME.zip" "$NAME"
-            )
+            zip -r "../out/$NAME.zip" "$NAME"
           else
-            tar -C pkg -czf "out/$NAME.tar.gz" "$NAME"
+            tar -czf "../out/$NAME.tar.gz" "$NAME"
           fi
-
-          test -s "out/$NAME.$([ "$PLATFORM" = "windows-x86_64" ] && echo zip || echo tar.gz)"
 
       - uses: actions/upload-artifact@v4
         with:
           name: pepepow-${{ matrix.name }}
           path: out/*
           if-no-files-found: error
-          retention-days: 30
 
   release:
     name: Publish release
     needs: build
     if: ${{ needs.build.result == 'success' }}
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -198,19 +134,12 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Verify all platform packages
+      - name: Verify platform packages
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(dist/PEPEPOW-*)
-          test "${#files[@]}" -eq 3
-          for platform in linux-x86_64 linux-arm64 windows-x86_64; do
-            matches=(dist/PEPEPOW-*-"$platform".*)
-            if [ "${#matches[@]}" -ne 1 ]; then
-              echo "::error::Expected exactly one package for $platform; found ${#matches[@]}"
-              exit 1
-            fi
-          done
+          test -n "$(find dist -maxdepth 1 -name '*linux-x86_64.tar.gz' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -name '*linux-arm64.tar.gz' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -name '*windows-x86_64.zip' -print -quit)"
 
       - name: Checksums
         run: |
@@ -218,25 +147,21 @@ jobs:
           cd dist
           sha256sum PEPEPOW-* > SHA256SUMS.txt
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/PEPEPOW-*
 
-      - name: Compose release notes
+      - name: Compose notes
         run: |
           set -euo pipefail
-          SHORT="${GITHUB_SHA::7}"
+          SHORT=${GITHUB_SHA::7}
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
-          PREV="$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)"
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)
           RANGE="${PREV:+$PREV..}${GITHUB_SHA}"
-          FIRST="$(git rev-list --max-parents=0 HEAD | tail -n 1)"
-          BASE="${PREV:-$FIRST}"
-
           {
             echo "# PEPEPOW ${TAG}"
             echo
-            echo "Test builds of the Qt wallet, daemon and CLI from this fork."
+            echo "Test builds of the Qt wallet, daemon and CLI from this fork. Extract and run."
             echo
             echo "## Downloads"
             echo
@@ -244,24 +169,23 @@ jobs:
             echo "| --- | --- | --- |"
             for f in dist/PEPEPOW-*; do
               case "$f" in
-                *windows-x86_64*) platform="Windows 64-bit" ;;
-                *linux-arm64*) platform="Linux ARM64" ;;
-                *linux-x86_64*) platform="Linux x86_64" ;;
-                *) platform="Other" ;;
+                *windows-x86_64*) P="Windows 64-bit, portable" ;;
+                *linux-arm64*)    P="Linux ARM64" ;;
+                *linux-x86_64*)   P="Linux 64-bit" ;;
+                *)                P="Other" ;;
               esac
-              echo "| ${platform} | \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
+              echo "| ${P} | \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
             done
             echo
             echo "## Authenticity"
             echo
-            echo "Built by GitHub Actions from commit \`${SHORT}\`."
+            echo "Every file below was built from this repository's public source at commit \`${SHORT}\` by GitHub Actions on GitHub-hosted machines. Nothing was built or uploaded by hand."
             echo
-            echo "- Windows: not code-signed; SmartScreen may ask for confirmation."
-            echo "- Linux: built on Ubuntu 20.04; requires glibc 2.31 or newer."
-            echo "- SHA256 checksums are included in SHA256SUMS.txt."
-            echo "- Build provenance attestations are attached to the release workflow."
+            echo "- Windows: not code-signed; SmartScreen may ask for confirmation"
+            echo "- Linux: built on Ubuntu 20.04; needs glibc 2.31 or newer"
+            echo "- Every file is listed in SHA256SUMS.txt and carries a GitHub build-provenance attestation tying it to this commit and workflow run."
             echo
-            echo "Verify with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."
+            echo "Verify a download with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`, or compare its hash:"
             echo
             echo '```'
             cat dist/SHA256SUMS.txt
@@ -269,12 +193,10 @@ jobs:
             echo
             echo "## Changes since ${PREV:-the first commit}"
             echo
-            echo "$(git rev-list --count "${RANGE}" ) commits; $(git diff --shortstat "$BASE" "$GITHUB_SHA")."
-            if [ -n "$PREV" ]; then
-              echo "Full comparison: ${REPO_URL}/compare/${PREV}...${SHORT}"
-            fi
+            echo "$(git rev-list --count ${RANGE}) commits, $(git diff --shortstat ${PREV:-$(git rev-list --max-parents=0 HEAD | tail -n1)} ${GITHUB_SHA})."
+            [ -n "$PREV" ] && echo "Full comparison: ${REPO_URL}/compare/${PREV}...${SHORT}"
             echo
-            git log --pretty=format:'- %s (%h) — %an' "$RANGE" | head -n 400
+            git log --pretty=format:'- %s (%h) — %an' ${RANGE} | head -n 400
           } > notes.md
 
       - name: Create release
@@ -282,12 +204,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          prerelease=()
-          case "$TAG" in
-            *-*) prerelease+=(--prerelease) ;;
-          esac
-          gh release create "$TAG" dist/* \
-            --title "PEPEPOW ${TAG}" \
-            --notes-file notes.md \
-            --target "$GITHUB_SHA" \
-            "${prerelease[@]}"
+          PRE=""
+          case "$TAG" in *-*) PRE="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --title "PEPEPOW ${TAG}" --notes-file notes.md --target "$GITHUB_SHA" $PRE

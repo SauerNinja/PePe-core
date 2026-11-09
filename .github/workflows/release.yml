@@ -92,7 +92,7 @@ jobs:
           JOBS=$(getconf _NPROCESSORS_ONLN)
           SITE=$(ls -d "$PWD"/depends/*/share/config.site | head -n1)
           ./autogen.sh
-          CONFIG_SITE="$SITE" ./configure --prefix=/ --disable-tests --disable-bench
+          CONFIG_SITE="$SITE" ./configure --prefix=/ --disable-tests --disable-bench --without-libs
           make -j"$JOBS"
           make install-strip DESTDIR="$PWD/stage"
 
